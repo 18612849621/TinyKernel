@@ -43,6 +43,8 @@ __global__ void sgemm_tiled_f32_kernel(
 }
 
 // Thread-tiled SGEMM: each thread computes THREAD_TILE x THREAD_TILE elements
+// k is inner loop; sA value is loaded once per row into register and reused
+// across all THREAD_TILE columns
 template <int TILE, int THREAD_TILE>
 __global__ void sgemm_thread_tiled_f32_kernel(
     const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C,
@@ -58,6 +60,7 @@ __global__ void sgemm_thread_tiled_f32_kernel(
     float acc[THREAD_TILE][THREAD_TILE] = {};
 
     for (int t = 0; t < (K + TILE - 1) / TILE; ++t) {
+        // load tile into shared memory
         for (int tr = 0; tr < THREAD_TILE; ++tr) {
             for (int tc = 0; tc < THREAD_TILE; ++tc) {
                 int global_row = block_row + thread_row + tr;
@@ -73,12 +76,14 @@ __global__ void sgemm_thread_tiled_f32_kernel(
         }
         __syncthreads();
 
+        // k is inner loop: load sA into register once, reuse across tc
         for (int k = 0; k < TILE; ++k) {
-            for (int tr = 0; tr < THREAD_TILE; ++tr) {
-                for (int tc = 0; tc < THREAD_TILE; ++tc) {
-                    acc[tr][tc] += sA[thread_row + tr][k] * sB[k][thread_col + tc];
-                }
-            }
+            float a_reg[THREAD_TILE];
+            for (int tr = 0; tr < THREAD_TILE; ++tr)
+                a_reg[tr] = sA[thread_row + tr][k];
+            for (int tc = 0; tc < THREAD_TILE; ++tc)
+                for (int tr = 0; tr < THREAD_TILE; ++tr)
+                    acc[tr][tc] += a_reg[tr] * sB[k][thread_col + tc];
         }
         __syncthreads();
     }

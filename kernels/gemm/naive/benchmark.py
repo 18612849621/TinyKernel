@@ -19,7 +19,7 @@ lib = load(
 
 torch.set_grad_enabled(False)
 
-KERNELS = [("naive", lib.sgemm_naive_f32), ("tiled", lib.sgemm_tiled_f32)]
+KERNELS = [("naive", lib.sgemm_naive_f32), ("tiled", lib.sgemm_tiled_f32), ("thread_tiled", lib.sgemm_thread_tiled_f32)]
 
 # fmt: off
 SHAPES = [

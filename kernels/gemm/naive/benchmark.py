@@ -10,8 +10,8 @@ import torch
 from torch.utils.cpp_extension import load
 
 lib = load(
-    name="sgemm_lib",
-    sources=[os.path.join(os.path.dirname(__file__), "sgemm.cu")],
+    name="gemm_naive_lib",
+    sources=[os.path.join(os.path.dirname(__file__), "gemm.cu")],
     extra_cuda_cflags=["-O3", "--use_fast_math"],
     extra_cflags=["-std=c++17"],
     verbose=False,

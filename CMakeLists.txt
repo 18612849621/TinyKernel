@@ -11,7 +11,7 @@ find_package(Torch REQUIRED)
 set(CUTLASS_INCLUDE ${CMAKE_SOURCE_DIR}/thirdparty/cutlass/include)
 
 add_library(cutlass_gemm SHARED
-    kernels/cutlass_gemm/cutlass_gemm.cu
+    kernels/gemm/cutlass/gemm.cu
 )
 
 target_include_directories(cutlass_gemm PRIVATE

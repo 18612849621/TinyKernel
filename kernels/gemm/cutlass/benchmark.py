@@ -8,11 +8,11 @@ if os.path.exists(_libstdcpp):
     ctypes.CDLL(_libstdcpp, mode=ctypes.RTLD_GLOBAL)
 
 import torch
-from cutlass_gemm import sgemm
+from gemm import sgemm
 
 torch.set_grad_enabled(False)
 
-M, N, K = 18900,13824,5120
+M, N, K = 18900, 13824, 5120
 A = torch.randn(M, K, dtype=torch.float32, device="cuda")
 B = torch.randn(K, N, dtype=torch.float32, device="cuda")
 

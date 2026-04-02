@@ -4,11 +4,11 @@ import torch
 from torch.utils.cpp_extension import load
 
 _dir = os.path.dirname(os.path.abspath(__file__))
-_root = os.path.join(_dir, "../..")
+_root = os.path.join(_dir, "../../..")
 
 lib = load(
-    name="cutlass_gemm_lib",
-    sources=[os.path.join(_dir, "cutlass_gemm.cu")],
+    name="gemm_cutlass_lib",
+    sources=[os.path.join(_dir, "gemm.cu")],
     extra_cuda_cflags=[
         "-O3",
         "--expt-relaxed-constexpr",

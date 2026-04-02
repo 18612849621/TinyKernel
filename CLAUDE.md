@@ -9,9 +9,13 @@ Each kernel lives in `kernels/<name>/` and consists of:
 - `<name>.py` — Python wrapper that JIT-compiles the `.cu` and exposes a clean API
 - `benchmark.py` — correctness check vs `torch` + TFLOPS benchmark
 
+GEMM implementations are grouped under `kernels/gemm/<variant>/` (e.g. `naive/`, `cutlass/`), each following the same three-file pattern with unified names `gemm.cu`, `gemm.py`, `benchmark.py`.
+
 Shared CUDA utilities are in `kernels/cuda_utils.h`.
 
 CUTLASS is in `thirdparty/cutlass/` as a git submodule (sparse checkout, `include/` only).
+
+Standard NVCC flags (used in CMake and should be mirrored in JIT builds): `-O3 --expt-relaxed-constexpr --expt-extended-lambda --use_fast_math`.
 
 ## Running a kernel
 

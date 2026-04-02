@@ -1,132 +1,71 @@
+import ctypes
+import os
 import time
-from functools import partial
-from typing import Optional
+
+_lib = "/usr/lib/x86_64-linux-gnu/libstdc++.so.6"
+if os.path.exists(_lib):
+    ctypes.CDLL(_lib, mode=ctypes.RTLD_GLOBAL)
 
 import torch
 from torch.utils.cpp_extension import load
 
-torch.set_grad_enabled(False)
-
-# Load the CUDA kernel as a python module
 lib = load(
     name="sgemm_lib",
-    sources=[
-        "sgemm.cu",
-    ],
-    extra_cuda_cflags=[
-        "-O3",
-        "-U__CUDA_NO_HALF_OPERATORS__",
-        "-U__CUDA_NO_HALF_CONVERSIONS__",
-        "-U__CUDA_NO_HALF2_OPERATORS__",
-        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "--use_fast_math",
-    ],
+    sources=[os.path.join(os.path.dirname(__file__), "sgemm.cu")],
+    extra_cuda_cflags=["-O3", "--use_fast_math"],
     extra_cflags=["-std=c++17"],
-    extra_include_paths=[".."]
+    verbose=False,
 )
 
-MAX_TFLOPS = -1
+torch.set_grad_enabled(False)
 
 
-def run_benchmark(
-    perf_func: callable,
-    a: torch.Tensor,
-    b: torch.Tensor,
-    tag: str,
-    out: Optional[torch.Tensor] = None,
-    warmup: int = 2,
-    iters: int = 20,
-    show_all: bool = False,
-):
-
-    global MAX_TFLOPS
-
-    M = a.size(0)
-    K = a.size(1)
-    N = b.size(1)
-
-    if a.size(0) > 1024 or a.size(1) >= 1024 or b.size(1) > 1024:
-        iters = 10
-
-    if out is not None:
-        out.fill_(0)
-    if out is not None:
-        for i in range(warmup):
-            if stages > 1:
-                perf_func(a, b, out, stages, swizzle, swizzle_stride)
-            else:
-                perf_func(a, b, out)
-    else:
-        for i in range(warmup):
-            _ = perf_func(a, b)
-
+def run(fn, A, B, C, iters=20, warmup=3):
+    for _ in range(warmup):
+        C.zero_()
+        fn(A, B, C)
     torch.cuda.synchronize()
-    start = time.time()
-    # iters
-    if out is not None:
-        for i in range(iters):
-            if stages > 1:
-                perf_func(a, b, out, stages, swizzle, swizzle_stride)
-            else:
-                perf_func(a, b, out)
-    else:
-        for i in range(iters):
-            out = perf_func(a, b)
+    t0 = time.time()
+    for _ in range(iters):
+        C.zero_()
+        fn(A, B, C)
     torch.cuda.synchronize()
-    end = time.time()
-    total_time = (end - start) * 1000  # ms
-    mean_time = total_time / iters
-    out_info = f"out_{tag}"
-    out_val = out.flatten()[:2].detach().cpu().numpy().tolist()[:3]
-    out_val = [round(v, 8) for v in out_val]
-    out_val = [f"{v:<12}"[:10] for v in out_val]
-    TFLOPS = (2 * M * N * K) * 1e-9 / (mean_time)
-    mean_time = str(f"{mean_time:<12}")[:8]
-
-    # caculate TFLOPS improved.
-    if TFLOPS > MAX_TFLOPS:
-        if MAX_TFLOPS > 0:
-            improve = ((TFLOPS - MAX_TFLOPS) / MAX_TFLOPS) * 100
-            improve = round(improve, 2)
-        else:
-            improve = 0
-        MAX_TFLOPS = TFLOPS
-        print(
-            f"{out_info:>35}: {out_val}, time:{mean_time}ms, "
-            f"TFLOPS: {TFLOPS:<6.2f}(+{improve:.2f}%)"
-        )
-    else:
-        print(
-            f"{out_info:>35}: {out_val}, time:{mean_time}ms, " f"TFLOPS: {TFLOPS:<6.2f}"
-        )
-    if show_all:
-        print(out)
-    return out, mean_time
+    ms = (time.time() - t0) * 1000 / iters
+    M, K, N = A.size(0), A.size(1), B.size(1)
+    tflops = 2 * M * N * K * 1e-12 / (ms * 1e-3)
+    return ms, tflops
 
 
-Ms = [4096, 8192, 16384]
-Ns = [4096, 8192, 16384]
-Ks = [2048, 4096, 8192]
-MAX_M, MAX_N, MAX_K = 16384, 16384, 8192
-# pre allocate for fast profiling.
-A = torch.randn((MAX_M, MAX_K), dtype=torch.float).cuda()
-B = torch.randn((MAX_K, MAX_N), dtype=torch.float).cuda()
-C = torch.randn((MAX_M, MAX_N), dtype=torch.float).cuda()
-torch.cuda.synchronize()
+# ── correctness ──────────────────────────────────────────────────────────────
+M, K, N = 512, 512, 512
+A = torch.randn(M, K, dtype=torch.float32, device="cuda")
+B = torch.randn(K, N, dtype=torch.float32, device="cuda")
+C = torch.zeros(M, N, dtype=torch.float32, device="cuda")
+ref = A @ B
 
-MNKs = [(M, N, K) for M in Ms for N in Ns for K in Ks]
-for M, N, K in MNKs:
-    MAX_TFLOPS = -1
-    print("-" * 130)
-    print(" " * 55 + f"M={M}, N={N}, K={K}")
-    a = A[:M, :K].contiguous()
-    b = B[:K, :N].contiguous()
-    c = C[:M, :N].contiguous()
+for name, fn in [("naive", lib.sgemm_naive_f32), ("tiled", lib.sgemm_tiled_f32)]:
+    C.zero_()
+    fn(A, B, C)
+    err = (C - ref).abs().max().item()
+    status = "PASS" if err < 1e-2 else "FAIL"
+    print(f"[{status}] {name:6s}  max_err={err:.6f}")
+
+# ── benchmark ─────────────────────────────────────────────────────────────────
+print()
+for M, K, N in [(1024, 1024, 1024), (4096, 4096, 4096)]:
+    A = torch.randn(M, K, dtype=torch.float32, device="cuda")
+    B = torch.randn(K, N, dtype=torch.float32, device="cuda")
+    C = torch.zeros(M, N, dtype=torch.float32, device="cuda")
+    print(f"M={M} K={K} N={N}")
+    for name, fn in [("naive", lib.sgemm_naive_f32), ("tiled", lib.sgemm_tiled_f32)]:
+        ms, tflops = run(fn, A, B, C)
+        print(f"  {name:6s}  {ms:7.3f} ms  {tflops:.2f} TFLOPS")
+    # torch cublas reference
     torch.cuda.synchronize()
-
-    # CUDA Cores FP32
-    run_benchmark(lib.sgemm_naive_f32, a, b, "f32(naive)", c)
+    t0 = time.time()
+    for _ in range(20):
+        _ = A @ B
     torch.cuda.synchronize()
-    print("-" * 130)
+    ms_ref = (time.time() - t0) * 1000 / 20
+    tflops_ref = 2 * M * N * K * 1e-12 / (ms_ref * 1e-3)
+    print(f"  {'cublas':6s}  {ms_ref:7.3f} ms  {tflops_ref:.2f} TFLOPS")

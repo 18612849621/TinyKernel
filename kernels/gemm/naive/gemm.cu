@@ -2,10 +2,13 @@
 #include <torch/extension.h>
 #include <torch/types.h>
 
-#define TILE 32
-#define THREAD_TILE 4
+// ── configuration ────────────────────────────────────────────────────────────
+constexpr int TILE_SIZE = 32;
+constexpr int THREAD_TILE_SIZE = 4;
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Naive SGEMM: each thread computes one C[row, col]
+template <int TILE>
 __global__ void sgemm_naive_f32_kernel(
     const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C,
     int M, int N, int K) {
@@ -18,6 +21,7 @@ __global__ void sgemm_naive_f32_kernel(
 }
 
 // Tiled shared-memory SGEMM
+template <int TILE>
 __global__ void sgemm_tiled_f32_kernel(
     const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C,
     int M, int N, int K) {
@@ -39,6 +43,7 @@ __global__ void sgemm_tiled_f32_kernel(
 }
 
 // Thread-tiled SGEMM: each thread computes THREAD_TILE x THREAD_TILE elements
+template <int TILE, int THREAD_TILE>
 __global__ void sgemm_thread_tiled_f32_kernel(
     const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C,
     int M, int N, int K) {
@@ -53,7 +58,6 @@ __global__ void sgemm_thread_tiled_f32_kernel(
     float acc[THREAD_TILE][THREAD_TILE] = {};
 
     for (int t = 0; t < (K + TILE - 1) / TILE; ++t) {
-        // load tile into shared memory
         for (int tr = 0; tr < THREAD_TILE; ++tr) {
             for (int tc = 0; tc < THREAD_TILE; ++tc) {
                 int global_row = block_row + thread_row + tr;
@@ -69,7 +73,6 @@ __global__ void sgemm_thread_tiled_f32_kernel(
         }
         __syncthreads();
 
-        // compute on shared memory
         for (int k = 0; k < TILE; ++k) {
             for (int tr = 0; tr < THREAD_TILE; ++tr) {
                 for (int tc = 0; tc < THREAD_TILE; ++tc) {
@@ -80,7 +83,6 @@ __global__ void sgemm_thread_tiled_f32_kernel(
         __syncthreads();
     }
 
-    // write back
     for (int tr = 0; tr < THREAD_TILE; ++tr) {
         for (int tc = 0; tc < THREAD_TILE; ++tc) {
             int global_row = block_row + thread_row + tr;
@@ -91,29 +93,29 @@ __global__ void sgemm_thread_tiled_f32_kernel(
     }
 }
 
-static void launch(
-    void (*kernel)(const float*, const float*, float*, int, int, int),
-    torch::Tensor A, torch::Tensor B, torch::Tensor C) {
+// ── launch helpers ────────────────────────────────────────────────────────────
+
+void sgemm_naive_f32(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
     int M = A.size(0), K = A.size(1), N = B.size(1);
-    dim3 block(TILE, TILE);
-    dim3 grid((N + TILE - 1) / TILE, (M + TILE - 1) / TILE);
-    kernel<<<grid, block>>>(
+    dim3 block(TILE_SIZE, TILE_SIZE);
+    dim3 grid((N + TILE_SIZE - 1) / TILE_SIZE, (M + TILE_SIZE - 1) / TILE_SIZE);
+    sgemm_naive_f32_kernel<TILE_SIZE><<<grid, block>>>(
         A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, N, K);
 }
 
-void sgemm_naive_f32(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
-    launch(sgemm_naive_f32_kernel, A, B, C);
-}
-
 void sgemm_tiled_f32(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
-    launch(sgemm_tiled_f32_kernel, A, B, C);
+    int M = A.size(0), K = A.size(1), N = B.size(1);
+    dim3 block(TILE_SIZE, TILE_SIZE);
+    dim3 grid((N + TILE_SIZE - 1) / TILE_SIZE, (M + TILE_SIZE - 1) / TILE_SIZE);
+    sgemm_tiled_f32_kernel<TILE_SIZE><<<grid, block>>>(
+        A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, N, K);
 }
 
 void sgemm_thread_tiled_f32(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
     int M = A.size(0), K = A.size(1), N = B.size(1);
-    dim3 block(TILE / THREAD_TILE, TILE / THREAD_TILE);
-    dim3 grid((N + TILE - 1) / TILE, (M + TILE - 1) / TILE);
-    sgemm_thread_tiled_f32_kernel<<<grid, block>>>(
+    dim3 block(TILE_SIZE / THREAD_TILE_SIZE, TILE_SIZE / THREAD_TILE_SIZE);
+    dim3 grid((N + TILE_SIZE - 1) / TILE_SIZE, (M + TILE_SIZE - 1) / TILE_SIZE);
+    sgemm_thread_tiled_f32_kernel<TILE_SIZE, THREAD_TILE_SIZE><<<grid, block>>>(
         A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, N, K);
 }
 

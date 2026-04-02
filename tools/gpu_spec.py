@@ -15,15 +15,25 @@ import torch
 # Sources: NVIDIA Ada/Hopper/Ampere whitepapers
 _OPS_PER_SM = {
     # Ada Lovelace  sm89
-    (8, 9): {"fp32": 128, "tf32": 512, "fp16": 256, "bf16": 256, "fp8": 512, "int8": 512},
+    (8, 9): {"fp32": 128, "tf32": 512, "fp16": 256, "bf16": 256, "fp8": 512, "int8": 512, "fp64": None},
     # Ampere A100   sm80
-    (8, 0): {"fp32": 64,  "tf32": 512, "fp16": 256, "bf16": 256, "fp8": None, "int8": 512},
+    (8, 0): {"fp32": 64,  "tf32": 512, "fp16": 256, "bf16": 256, "fp8": None, "int8": 512, "fp64": 64},
     # Ampere GA10x  sm86
-    (8, 6): {"fp32": 128, "tf32": 512, "fp16": 256, "bf16": 256, "fp8": None, "int8": 512},
+    (8, 6): {"fp32": 128, "tf32": 512, "fp16": 256, "bf16": 256, "fp8": None, "int8": 512, "fp64": None},
     # Hopper        sm90
-    (9, 0): {"fp32": 128, "tf32": 512, "fp16": 256, "bf16": 256, "fp8": 1024, "int8": 1024},
+    (9, 0): {"fp32": 128, "tf32": 512, "fp16": 256, "bf16": 256, "fp8": 1024, "int8": 1024, "fp64": 64},
     # Turing        sm75
-    (7, 5): {"fp32": 64,  "tf32": None,"fp16": 128, "bf16": None,"fp8": None, "int8": 256},
+    (7, 5): {"fp32": 64,  "tf32": None,"fp16": 128, "bf16": None,"fp8": None, "int8": 256,  "fp64": None},
+}
+
+# Tensor Core supported formats per architecture (for display)
+_TC_FORMATS = {
+    (8, 9): "fp16, bf16, tf32, fp8 (e4m3/e5m2), int8",
+    (8, 0): "fp16, bf16, tf32, fp64, int8",
+    (8, 6): "fp16, bf16, tf32, int8",
+    (9, 0): "fp16, bf16, tf32, fp8 (e4m3/e5m2), fp64, int8",
+    (7, 5): "fp16, int8, int4, int1",
+    (7, 0): "fp16",
 }
 
 # bus width (bits) by GPU name substring
@@ -84,6 +94,9 @@ def main():
         print(f"  Mem bandwidth      {bw:.0f} GB/s  (theoretical)")
 
     ops = _OPS_PER_SM.get(cap)
+    tc_formats = _TC_FORMATS.get(cap)
+    if tc_formats:
+        print(f"\n  Tensor Core formats:  {tc_formats}")
     if ops and sm_mhz:
         print(f"\n  Theoretical throughput (TFLOPS / TOPS):")
         for dtype, ops_per_sm in ops.items():

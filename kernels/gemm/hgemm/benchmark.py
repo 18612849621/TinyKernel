@@ -11,7 +11,7 @@ from torch.utils.cpp_extension import load
 
 lib = load(
     name="hgemm_naive_lib",
-    sources=[os.path.join(os.path.dirname(__file__), "hgemm.cu")],
+    sources=[os.path.join(os.path.dirname(__file__), "gemm.cu")],
     extra_cuda_cflags=["-O3", "--use_fast_math"],
     extra_cflags=["-std=c++17"],
     verbose=False,

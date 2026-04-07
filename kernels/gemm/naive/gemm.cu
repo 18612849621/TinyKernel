@@ -12,8 +12,7 @@ constexpr int TM = 4;
 constexpr int TN = 4;
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Naive SGEMM: each thread computes one C[row, col]
-template <int TILE>
+// Naive SGEMM: no tiling, each thread computes one C[row, col]
 __global__ void sgemm_naive_f32_kernel(
     const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C,
     int M, int N, int K) {
@@ -25,23 +24,25 @@ __global__ void sgemm_naive_f32_kernel(
     C[row * N + col] = sum;
 }
 
-// Tiled shared-memory SGEMM
-template <int TILE>
+// Tiled shared-memory SGEMM: block tile BM x BN, K dimension tiled by BK
+template <int _BM, int _BN, int _BK>
 __global__ void sgemm_tiled_f32_kernel(
     const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C,
     int M, int N, int K) {
-    __shared__ float sA[TILE][TILE];
-    __shared__ float sB[TILE][TILE];
-    int row = blockIdx.y * TILE + threadIdx.y;
-    int col = blockIdx.x * TILE + threadIdx.x;
+    __shared__ float sA[_BM][_BK];
+    __shared__ float sB[_BK][_BN];
+
+    int row = blockIdx.y * _BM + threadIdx.y;
+    int col = blockIdx.x * _BN + threadIdx.x;
     float sum = 0.f;
-    for (int t = 0; t < (K + TILE - 1) / TILE; ++t) {
-        int kA = t * TILE + threadIdx.x;
-        int kB = t * TILE + threadIdx.y;
+
+    for (int t = 0; t < (K + _BK - 1) / _BK; ++t) {
+        int kA = t * _BK + threadIdx.x;
+        int kB = t * _BK + threadIdx.y;
         sA[threadIdx.y][threadIdx.x] = (row < M && kA < K) ? A[row * K + kA] : 0.f;
         sB[threadIdx.y][threadIdx.x] = (kB < K && col < N) ? B[kB * N + col] : 0.f;
         __syncthreads();
-        for (int k = 0; k < TILE; ++k) sum += sA[threadIdx.y][k] * sB[k][threadIdx.x];
+        for (int k = 0; k < _BK; ++k) sum += sA[threadIdx.y][k] * sB[k][threadIdx.x];
         __syncthreads();
     }
     if (row < M && col < N) C[row * N + col] = sum;
@@ -116,7 +117,7 @@ void sgemm_naive_f32(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
     int M = A.size(0), K = A.size(1), N = B.size(1);
     dim3 block(BM, BN);
     dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
-    sgemm_naive_f32_kernel<BM><<<grid, block>>>(
+    sgemm_naive_f32_kernel<<<grid, block>>>(
         A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, N, K);
 }
 
@@ -124,7 +125,7 @@ void sgemm_tiled_f32(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
     int M = A.size(0), K = A.size(1), N = B.size(1);
     dim3 block(BM, BN);
     dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
-    sgemm_tiled_f32_kernel<BM><<<grid, block>>>(
+    sgemm_tiled_f32_kernel<BM, BN, BK><<<grid, block>>>(
         A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, N, K);
 }
 

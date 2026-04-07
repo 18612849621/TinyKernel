@@ -18,7 +18,11 @@ lib = load(
 
 torch.set_grad_enabled(False)
 
-KERNELS = [("naive", lib.sgemm_naive_f32), ("tiled", lib.sgemm_tiled_f32), ("thread_tiled", lib.sgemm_thread_tiled_f32)]
+KERNELS = [
+    ("naive", lib.sgemm_naive),
+    ("tiled", lib.sgemm_tiled),
+    ("thread_tiled", lib.sgemm_thread_tiled),
+]
 
 # fmt: off
 SHAPES = [
@@ -42,5 +46,5 @@ for M, N, K in SHAPES:
         fn(A, B, C)
         err = (C.cpu() - ref).abs().max().item()
         status = "PASS" if err < 1e-2 else "FAIL"
-        print(f"  [{status}] {name:6s}  max_err={err:.6f}")
+        print(f"  [{status}] {name:12s}  max_err={err:.6f}")
     print()

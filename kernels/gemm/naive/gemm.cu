@@ -3,8 +3,13 @@
 #include <torch/types.h>
 
 // ── configuration ────────────────────────────────────────────────────────────
-constexpr int TILE_SIZE = 32;
-constexpr int THREAD_TILE_SIZE = 4;
+// Block tile: each block computes BM x BN output, loading BK elements along K
+constexpr int BM = 32;
+constexpr int BN = 32;
+constexpr int BK = 32;
+// Thread tile: each thread computes TM x TN elements
+constexpr int TM = 4;
+constexpr int TN = 4;
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Naive SGEMM: each thread computes one C[row, col]
@@ -42,33 +47,40 @@ __global__ void sgemm_tiled_f32_kernel(
     if (row < M && col < N) C[row * N + col] = sum;
 }
 
-// Thread-tiled SGEMM: each thread computes THREAD_TILE x THREAD_TILE elements
+// Thread-tiled SGEMM: each thread computes TM x TN elements
 // k is inner loop; sA value is loaded once per row into register and reused
-// across all THREAD_TILE columns
-template <int TILE, int THREAD_TILE>
+// across all TN columns
+template <int _BM, int _BN, int _BK, int _TM, int _TN>
 __global__ void sgemm_thread_tiled_f32_kernel(
     const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C,
     int M, int N, int K) {
-    __shared__ float sA[TILE][TILE];
-    __shared__ float sB[TILE][TILE];
+    // block tile in shared memory
+    __shared__ float sA[_BM][_BK];
+    __shared__ float sB[_BK][_BN];
 
-    int block_row = blockIdx.y * TILE;
-    int block_col = blockIdx.x * TILE;
-    int thread_row = threadIdx.y * THREAD_TILE;
-    int thread_col = threadIdx.x * THREAD_TILE;
+    // thread indices within the block
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    // threads per block: (_BM/_TM) x (_BN/_TN)
 
-    float acc[THREAD_TILE][THREAD_TILE] = {};
+    int block_row = blockIdx.y * _BM;
+    int block_col = blockIdx.x * _BN;
+    int thread_row = ty * _TM;
+    int thread_col = tx * _TN;
 
-    for (int t = 0; t < (K + TILE - 1) / TILE; ++t) {
-        // load tile into shared memory
-        for (int tr = 0; tr < THREAD_TILE; ++tr) {
-            for (int tc = 0; tc < THREAD_TILE; ++tc) {
+    float acc[_TM][_TN] = {};
+
+    for (int t = 0; t < (K + _BK - 1) / _BK; ++t) {
+        // load A tile: BM x BK, each thread loads (_BM*_BK) / (threads) elements
+        // load pattern: thread (ty,tx) loads A[block_row + ty*_TM + tr][t*BK + tx*_TN + tc]
+        for (int tr = 0; tr < _TM; ++tr) {
+            for (int tc = 0; tc < _TN; ++tc) {
                 int global_row = block_row + thread_row + tr;
-                int global_k = t * TILE + thread_col + tc;
+                int global_k = t * _BK + thread_col + tc;
                 sA[thread_row + tr][thread_col + tc] =
                     (global_row < M && global_k < K) ? A[global_row * K + global_k] : 0.f;
 
-                int global_k2 = t * TILE + thread_row + tr;
+                int global_k2 = t * _BK + thread_row + tr;
                 int global_col = block_col + thread_col + tc;
                 sB[thread_row + tr][thread_col + tc] =
                     (global_k2 < K && global_col < N) ? B[global_k2 * N + global_col] : 0.f;
@@ -76,20 +88,20 @@ __global__ void sgemm_thread_tiled_f32_kernel(
         }
         __syncthreads();
 
-        // k is inner loop: load sA into register once, reuse across tc
-        for (int k = 0; k < TILE; ++k) {
-            float a_reg[THREAD_TILE];
-            for (int tr = 0; tr < THREAD_TILE; ++tr)
+        // k is inner loop: load sA into register once, reuse across TN
+        for (int k = 0; k < _BK; ++k) {
+            float a_reg[_TM];
+            for (int tr = 0; tr < _TM; ++tr)
                 a_reg[tr] = sA[thread_row + tr][k];
-            for (int tc = 0; tc < THREAD_TILE; ++tc)
-                for (int tr = 0; tr < THREAD_TILE; ++tr)
+            for (int tc = 0; tc < _TN; ++tc)
+                for (int tr = 0; tr < _TM; ++tr)
                     acc[tr][tc] += a_reg[tr] * sB[k][thread_col + tc];
         }
         __syncthreads();
     }
 
-    for (int tr = 0; tr < THREAD_TILE; ++tr) {
-        for (int tc = 0; tc < THREAD_TILE; ++tc) {
+    for (int tr = 0; tr < _TM; ++tr) {
+        for (int tc = 0; tc < _TN; ++tc) {
             int global_row = block_row + thread_row + tr;
             int global_col = block_col + thread_col + tc;
             if (global_row < M && global_col < N)
@@ -102,25 +114,25 @@ __global__ void sgemm_thread_tiled_f32_kernel(
 
 void sgemm_naive_f32(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
     int M = A.size(0), K = A.size(1), N = B.size(1);
-    dim3 block(TILE_SIZE, TILE_SIZE);
-    dim3 grid((N + TILE_SIZE - 1) / TILE_SIZE, (M + TILE_SIZE - 1) / TILE_SIZE);
-    sgemm_naive_f32_kernel<TILE_SIZE><<<grid, block>>>(
+    dim3 block(BM, BN);
+    dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
+    sgemm_naive_f32_kernel<BM><<<grid, block>>>(
         A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, N, K);
 }
 
 void sgemm_tiled_f32(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
     int M = A.size(0), K = A.size(1), N = B.size(1);
-    dim3 block(TILE_SIZE, TILE_SIZE);
-    dim3 grid((N + TILE_SIZE - 1) / TILE_SIZE, (M + TILE_SIZE - 1) / TILE_SIZE);
-    sgemm_tiled_f32_kernel<TILE_SIZE><<<grid, block>>>(
+    dim3 block(BM, BN);
+    dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
+    sgemm_tiled_f32_kernel<BM><<<grid, block>>>(
         A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, N, K);
 }
 
 void sgemm_thread_tiled_f32(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
     int M = A.size(0), K = A.size(1), N = B.size(1);
-    dim3 block(TILE_SIZE / THREAD_TILE_SIZE, TILE_SIZE / THREAD_TILE_SIZE);
-    dim3 grid((N + TILE_SIZE - 1) / TILE_SIZE, (M + TILE_SIZE - 1) / TILE_SIZE);
-    sgemm_thread_tiled_f32_kernel<TILE_SIZE, THREAD_TILE_SIZE><<<grid, block>>>(
+    dim3 block(BN / TN, BM / TM);
+    dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
+    sgemm_thread_tiled_f32_kernel<BM, BN, BK, TM, TN><<<grid, block>>>(
         A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>(), M, N, K);
 }
 
